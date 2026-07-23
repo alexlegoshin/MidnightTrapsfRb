@@ -20,12 +20,19 @@ class MOTConfig:
 
 @dataclass
 class DipoleConfig:
-    ''' Optical dipole trap parameters. '''
+    ''' Optical dipole trap parameters.
+
+        potential selects the trap geometry:
+            'gaussian' -- single focused red-detuned beam (a Gaussian well)
+            'lattice'  -- retro-reflected 1D optical lattice (wells every lambda/2)
+            'crossed'  -- two perpendicular Gaussian beams (tight 3D trap)
+        The laser power is derived from the requested depth.
+    '''
+    potential: str = 'gaussian'   # 'gaussian' | 'lattice' | 'crossed'
     wavelength: float = 1064e-9   # trap laser wavelength, m
-    power: float = 3.0            # trap power, W
     waist: float = 25e-6          # 1/e^2 beam waist, m
-    axis: int = 2                 # propagation axis (0=x,1=y,2=z)
-    lattice: bool = False         # retro-reflected 1D lattice instead of a well
+    depth_uK: float = 500.0       # target trap depth, micro-Kelvin
+    axis: int = 2                 # propagation axis for single-beam traps
 
 
 @dataclass

@@ -37,6 +37,9 @@ class TrapSimulatorApp:
         self._pub = None       # (X, weight, status) for the camera
         self._op = None        # operating_point() for the estimator
         self._coeff = None      # coefficients handed back by the estimator
+        self._report = None     # slow-cadence transfer/level report
+        self._last_report = 0.0
+        self.report_interval = 2.0  # seconds between reports
 
         self.estimator = CoefficientEstimator(self.sim.atom, self._get_op,
                                               self._put_coeffs, cadence=0.05)
@@ -67,6 +70,10 @@ class TrapSimulatorApp:
                 X, w = self.sim.snapshot()
                 self._pub = (X, w, self.sim.status())
                 self._op = self.sim.operating_point()
+                now = time.time()
+                if now - self._last_report > self.report_interval:
+                    self._report = self.sim.report()
+                    self._last_report = now
             time.sleep(0.0008)  # yield so the GUI/estimator can take the lock
 
     # -------------------------------------------------------- callbacks ----
@@ -88,6 +95,7 @@ class TrapSimulatorApp:
     def _do_recapture(self, s, a):
         with self.lock:
             self.sim.recapture()
+            self._last_report = 0.0   # refresh the report promptly
         dpg.set_value('chk_cooling', self.sim.cooling_on)
         dpg.set_value('chk_dipole', self.sim.dipole_on)
 
@@ -100,10 +108,10 @@ class TrapSimulatorApp:
                                 detuning=dpg.get_value('mot_detuning'),
                                 radius=dpg.get_value('mot_radius'),
                                 B_gradient=dpg.get_value('mot_grad'))
-            self.sim.update_dipole(wavelength=dpg.get_value('dip_wl') * 1e-9,
-                                   power=dpg.get_value('dip_power'),
+            self.sim.update_dipole(potential=dpg.get_value('dip_type'),
+                                   wavelength=dpg.get_value('dip_wl') * 1e-9,
                                    waist=dpg.get_value('dip_waist') * 1e-6,
-                                   lattice=dpg.get_value('dip_lattice'))
+                                   depth_uK=dpg.get_value('dip_depth'))
             self.cfg.cloud.N = int(dpg.get_value('cloud_N'))
             self.cfg.cloud.temperature = dpg.get_value('cloud_T') * 1e-6
             self.cfg.cloud.sigma_r = dpg.get_value('cloud_sigma') * 1e-3
@@ -130,6 +138,7 @@ class TrapSimulatorApp:
                     with dpg.tab_bar():
                         self._tab_configuration(c)
                         self._tab_controls()
+                        self._tab_report()
                         self._tab_camera(c)
                 with dpg.child_window(autosize_x=True, autosize_y=True):
                     dpg.add_text('', tag='status')
@@ -149,14 +158,14 @@ class TrapSimulatorApp:
                                 default_value=c.mot.B_gradient, step=0.01, format='%.3f')
             dpg.add_separator()
             dpg.add_text('Dipole trap')
-            dpg.add_input_float(label='wavelength (nm)', tag='dip_wl',
-                                default_value=c.dipole.wavelength * 1e9, step=1, format='%.1f')
-            dpg.add_input_float(label='power (W)', tag='dip_power',
-                                default_value=c.dipole.power, step=0.5, format='%.2f')
+            dpg.add_combo(['gaussian', 'lattice', 'crossed'], label='potential',
+                          tag='dip_type', default_value=c.dipole.potential)
+            dpg.add_input_float(label='depth (uK)', tag='dip_depth',
+                                default_value=c.dipole.depth_uK, step=50, format='%.0f')
             dpg.add_input_float(label='waist (um)', tag='dip_waist',
                                 default_value=c.dipole.waist * 1e6, step=1, format='%.1f')
-            dpg.add_checkbox(label='optical lattice', tag='dip_lattice',
-                             default_value=c.dipole.lattice)
+            dpg.add_input_float(label='wavelength (nm)', tag='dip_wl',
+                                default_value=c.dipole.wavelength * 1e9, step=1, format='%.1f')
             dpg.add_separator()
             dpg.add_text('Cloud')
             dpg.add_input_int(label='atoms N', tag='cloud_N', default_value=c.cloud.N, step=100)
@@ -194,6 +203,14 @@ class TrapSimulatorApp:
                          '4. Repumper off => atoms go dark',
                          wrap=330, color=(150, 150, 150))
 
+    def _tab_report(self):
+        with dpg.tab(label='Report'):
+            dpg.add_text('Recapture & level report', color=(180, 180, 180))
+            dpg.add_text('updates every %.0f s' % self.report_interval,
+                         color=(120, 120, 120))
+            dpg.add_separator()
+            dpg.add_text('waiting for data...', tag='report_text', wrap=330)
+
     def _tab_camera(self, c):
         with dpg.tab(label='Camera'):
             dpg.add_slider_float(label='FOV (mm)', tag='cam_fov',
@@ -215,6 +232,9 @@ class TrapSimulatorApp:
         t0 = time.perf_counter()
         with self.lock:
             pub = self._pub
+            report = self._report
+        if report is not None:
+            self._render_report(report)
         if pub is not None:
             X, weight, st = pub
             dpg.set_value('cam_tex', self.cam.render_flat(X, weight))
@@ -230,6 +250,27 @@ class TrapSimulatorApp:
                           'cooling=%s  repumper=%s  dipole=%s    model err=%s    %.0f fps'
                           % (st['time_ms'], st['T_uK'], st['rms_mm'], st['fluorescence'],
                              st['cooling'], st['repumper'], st['dipole'], err_txt, fps))
+
+    def _render_report(self, r):
+        txt = (
+            'Dipole trap: %s,  depth = %.0f uK  [%s]\n'
+            '\n'
+            'Recaptured: %d / %d atoms  (%.1f%%)\n'
+            '  T (all cloud)   = %.1f uK\n'
+            '  T (trapped)     = %.1f uK\n'
+            '\n'
+            'Level populations:\n'
+            '  F=2  (bright)   = %5.1f %%\n'
+            "  F'=3 (excited)  = %5.1f %%\n"
+            '  F=1  (dark)     = %5.1f %%\n'
+            '  bright fraction = %5.1f %%'
+            % (r['dipole_type'], r['dipole_depth_uK'],
+               'ON' if r['dipole_on'] else 'off',
+               r['n_trapped'], r['n_total'], 100 * r['trapped_fraction'],
+               r['T_all'] * 1e6, r['T_trapped'] * 1e6,
+               100 * r['pop_F2'], 100 * r['pop_excited'], 100 * r['pop_dark'],
+               100 * r['bright_fraction']))
+        dpg.set_value('report_text', txt)
 
     # ------------------------------------------------------------- run ----
     def run(self, smoke_frames=0, screenshot=None):

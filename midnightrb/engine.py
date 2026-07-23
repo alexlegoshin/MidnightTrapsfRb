@@ -28,9 +28,70 @@ from MOTorNOT.dipole import DipoleTrap, OpticalLattice
 from MOTorNOT.levels import LevelDynamics
 from MOTorNOT.integration import integrate
 from MOTorNOT import diagnostics as dg
+from MOTorNOT import recapture as rc
 
 amu = physical_constants['atomic mass constant'][0]
 G_ACCEL = 9.80665
+
+
+class DipoleTrapModel:
+    ''' A selectable optical dipole potential built to a requested depth.
+
+        Kinds:
+            'gaussian' -- one focused red-detuned beam (a Gaussian well)
+            'lattice'  -- retro-reflected 1D lattice (wells every lambda/2)
+            'crossed'  -- two perpendicular Gaussian beams (a tight 3D trap)
+
+        The laser power is solved from the requested depth (U is linear in
+        power). Exposes exactly the interface the engine and MOTorNOT.recapture
+        use: potential/force/acceleration, mass, center, waist, depth_uK.
+    '''
+
+    def __init__(self, atom, potential, wavelength, waist, depth_uK, axis=2):
+        self.mass = atom['mass'] * amu
+        self.waist = waist
+        self.center = np.zeros(3)
+        self.kind = potential
+        target_J = depth_uK * 1e-6 * kB
+
+        def gaussian(power, ax):
+            return DipoleTrap(atom=atom, wavelength=wavelength, power=power,
+                              waist=waist, axis=ax)
+
+        if potential == 'lattice':
+            probe = OpticalLattice(atom=atom, wavelength=wavelength, power=1.0,
+                                   waist=waist, axis=axis)
+            power = target_J / probe.depth()
+            self.traps = [OpticalLattice(atom=atom, wavelength=wavelength,
+                                         power=power, waist=waist, axis=axis)]
+        elif potential == 'crossed':
+            probe = gaussian(1.0, 0)
+            power = (target_J / 2) / probe.depth()   # two beams add at centre
+            self.traps = [gaussian(power, 0), gaussian(power, 2)]
+        else:  # 'gaussian'
+            probe = gaussian(1.0, axis)
+            power = target_J / probe.depth()
+            self.traps = [gaussian(power, axis)]
+
+        # tightest oscillation frequency (used to cap the integrator timestep)
+        self.omega_max = max(max(abs(np.asarray(t.trap_frequencies())))
+                             for t in self.traps)
+
+    def potential(self, X):
+        return sum(t.potential(X) for t in self.traps)
+
+    def force(self, X):
+        return sum(t.force(X) for t in self.traps)
+
+    def acceleration(self, X, V=None):
+        return self.force(X) / self.mass
+
+    def depth_uK(self):
+        U0 = backend.asnumpy(self.potential(self.center.reshape(1, 3)))[0]
+        return float(abs(U0)) / kB * 1e6
+
+    def trap_frequencies(self):
+        return self.traps[0].trap_frequencies()
 
 
 class RealTimeSimulation:
@@ -88,9 +149,8 @@ class RealTimeSimulation:
 
     def _build_dipole(self):
         d = self.cfg.dipole
-        cls = OpticalLattice if d.lattice else DipoleTrap
-        self.trap = cls(atom=self.atom, wavelength=d.wavelength, power=d.power,
-                        waist=d.waist, axis=d.axis)
+        self.trap = DipoleTrapModel(self.atom, d.potential, d.wavelength,
+                                    d.waist, d.depth_uK, d.axis)
 
     def reset_cloud(self):
         c = self.cfg.cloud
@@ -222,9 +282,25 @@ class RealTimeSimulation:
             return a
         return accel
 
+    def _stable_dt(self, dt):
+        ''' Cap the timestep so the tightest active trap stays well-resolved by
+            RK4 (dt*omega ~ 0.15). Without this a fast trap -- especially an
+            optical lattice with MHz oscillations -- would blow up when the
+            speed multiplier makes dt large. '''
+        omega = 0.0
+        if self.cooling_on:
+            omega = max(omega, np.sqrt(max(self.kappa.max(), 0.0) / self.mass))
+        if self.dipole_on:
+            omega = max(omega, self.trap.omega_max)
+        if omega > 0:
+            dt = min(dt, 0.15 / omega)
+        return dt
+
     def step(self, dt=None):
-        ''' Advance the simulation by one timestep (scaled by self.speed). '''
+        ''' Advance the simulation by one timestep (scaled by self.speed, and
+            capped for numerical stability of the active traps). '''
         dt = self.cfg.dt * self.speed if dt is None else dt
+        dt = self._stable_dt(dt)
         self._update_populations(dt)
 
         accel = self._acceleration_fn()
@@ -276,6 +352,30 @@ class RealTimeSimulation:
             'repumper': self.repumper_on,
             'dipole': self.dipole_on,
             'model_error': self.model_error,
+        }
+
+    def report(self):
+        ''' Slow-cadence diagnostics of the transfer: how many atoms are bound
+            in the current dipole potential (energy criterion E < 0), their
+            temperature, the internal-state (level) distribution and the trap
+            parameters. Meant to be polled every few seconds, not every frame. '''
+        frac, mask = rc.capture_fraction(self.trap, self.X, self.V)
+        n_total = self.n_atoms()
+        T_trapped = dg.temperature(self.V[mask], self.mass) \
+            if bool(mask.any()) else 0.0
+        return {
+            'n_total': n_total,
+            'n_trapped': int(round(frac * n_total)),
+            'trapped_fraction': frac,
+            'T_all': self.temperature(),
+            'T_trapped': T_trapped,
+            'pop_F2': float(self.populations[0]),
+            'pop_excited': float(self.populations[1]),
+            'pop_dark': float(self.populations[2]),
+            'bright_fraction': self.bright_fraction,
+            'dipole_type': self.trap.kind,
+            'dipole_depth_uK': self.trap.depth_uK(),
+            'dipole_on': self.dipole_on,
         }
 
 
