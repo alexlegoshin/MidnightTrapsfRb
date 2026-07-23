@@ -249,14 +249,20 @@ class TrapSimulatorApp:
             fps = 0.0
             if len(self._frame_times) > 1:
                 fps = (len(self._frame_times) - 1) / (self._frame_times[-1] - self._frame_times[0] + 1e-9)
-            err = st['model_error']
-            err_txt = 'n/a' if err != err else '%.1f%%' % (err * 100)
+            # the model-error indicator is the MOT linearisation error; it is
+            # only meaningful while the cooling beams are on. The dipole force is
+            # computed exactly, so it has no such error.
+            if not st['cooling']:
+                model_txt = 'exact (dipole)' if st['dipole'] else '--'
+            else:
+                err = st['model_error']
+                model_txt = 'n/a' if err != err else '%.1f%%' % (err * 100)
             dpg.set_value('status',
-                          'sim t=%7.1f ms   T=%6.1f uK   rms=%.2f mm   fluor=%.3f\n'
-                          'cooling=%s  repumper=%s  dipole=%s  imaging=%s   model err=%s   %.0f fps'
+                          'sim t=%7.1f ms   T(view)=%6.1f uK   rms=%.2f mm   fluor=%.3f\n'
+                          'cooling=%s  repumper=%s  dipole=%s  imaging=%s   MOT model=%s   %.0f fps'
                           % (st['time_ms'], st['T_uK'], st['rms_mm'], st['fluorescence'],
                              st['cooling'], st['repumper'], st['dipole'], st['imaging'],
-                             err_txt, fps))
+                             model_txt, fps))
 
     def _render_report(self, r):
         txt = (

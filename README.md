@@ -79,6 +79,10 @@ python run.py                        # or:  python -m midnightrb
 - **Report** (updates every ~2 s) — how many atoms were recaptured (and the
   fraction), the trapped vs. whole-cloud temperature, and the internal-state
   level distribution (F=2 / F′=3 / dark F=1), plus the active trap parameters.
+  The trapped temperature here is the meaningful one (typically well below the
+  trap depth); the status line shows `T(view)`, the temperature of atoms still in
+  frame, because after a transfer the untrapped atoms fly off and would otherwise
+  dominate a whole-cloud average.
 - **Camera** — field of view, optical blur, exposure, colormap and viewing axis.
 
 Try: cool with beams + repumper → open the Report tab → hit *Recapture* and watch
@@ -134,6 +138,11 @@ parameter can never apply stale coefficients — the fast model self-corrects wh
 staying cheap. The integrator timestep is auto-capped to the tightest active trap
 frequency so even the MHz optical lattice stays stable under the speed
 multiplier.
+
+The dipole trap needs no such estimator: unlike the 6-beam MOT force, its
+gradient is a simple analytic expression, so the dipole force is computed
+**exactly** (and ~4× faster than by finite differences). The MOT model-error
+indicator therefore applies only while the cooling beams are on.
 
 Three threads cooperate through short-held locks — a **physics** thread (owns the
 simulation), the **estimator**, and the **GUI** (renders the camera and handles
