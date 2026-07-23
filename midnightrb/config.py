@@ -68,8 +68,11 @@ class SimConfig:
     gravity: bool = True            # let atoms fall when untrapped
     recoil_heating: bool = True     # photon-recoil momentum diffusion
     heating_factor: float = 0.4     # scales recoil heating (=> Doppler-limit T)
-    imaging_scatter: float = 0.2    # excited fraction under the imaging laser
-    #                                 (makes atoms glow independently of cooling)
+    imaging_saturation: float = 0.4  # resonant saturation s0 of the imaging beam
+    #                                  (drives fluorescence + dark pumping like a
+    #                                   real near-resonant imaging laser)
+    imaging_heats: bool = False      # whether imaging light also recoil-heats
+    #                                  (realistic but destructive; off = clean view)
     mot: MOTConfig = field(default_factory=MOTConfig)
     dipole: DipoleConfig = field(default_factory=DipoleConfig)
     cloud: CloudConfig = field(default_factory=CloudConfig)

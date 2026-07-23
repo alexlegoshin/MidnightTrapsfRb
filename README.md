@@ -116,10 +116,15 @@ needs. See the MOTorNOT README for the full equations; in brief:
   a vertical beam would let atoms leak out along its weak axis. The `crossed`
   geometry holds atoms best.
 - **Imaging** — atoms are only visible while they scatter light. The cooling
-  beams provide that in the MOT, but a dipole trap is dark, so a separate
-  near-resonant **imaging laser** illuminates the trapped atoms (as in a real
-  fluorescence image). It is modelled as pure illumination (adds brightness, no
-  force).
+  beams provide that in the MOT, but the far-detuned dipole trap is dark (its
+  1064 nm light barely scatters, so it does not touch the internal state), so a
+  separate near-resonant **imaging laser** illuminates the trapped atoms. It
+  drives the same cycling transition as the cooling light, so it feeds the level
+  model properly: it produces fluorescence *and* pumps atoms into the dark F=1
+  state — turn the repumper off while imaging and the glow fades, exactly as in a
+  real fluorescence image (Recapture switches the repumper on for this reason).
+  Imaging recoil heating is off by default (`imaging_heats`) so the view is
+  non-destructive; enable it for realistic, destructive imaging.
 - **Recoil heating & gravity** — photon-recoil momentum diffusion lets the MOT
   settle at a realistic finite size (~Doppler-limit temperature) instead of
   collapsing to a point, and gravity makes an untrapped cloud fall.

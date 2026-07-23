@@ -152,6 +152,7 @@ class RealTimeSimulation:
         self.dark_fraction = 0.0
         self.bright_fraction = 1.0
         self.scattering_rate = 0.0
+        self.heating_rate = 0.0
 
         self.speed = self.cfg.speed
 
@@ -201,6 +202,7 @@ class RealTimeSimulation:
         self.dark_fraction = 0.0
         self.bright_fraction = 1.0
         self.scattering_rate = 0.0
+        self.heating_rate = 0.0
         self.time = 0.0
 
     # --------------------------------------------------------- controls ----
@@ -222,11 +224,14 @@ class RealTimeSimulation:
         self.imaging_on = bool(on)
 
     def recapture(self):
-        ''' One-click MOT -> dipole transfer: cut the MOT, hold the dipole, and
-            switch on the imaging laser so the transferred atoms stay visible. '''
+        ''' One-click MOT -> dipole transfer: cut the cooling beams, hold the
+            dipole, and switch on the imaging laser (with the repumper, so the
+            imaged atoms are not pumped into the dark state) to keep the
+            transferred cloud visible. '''
         self.cooling_on = False
         self.dipole_on = True
         self.imaging_on = True
+        self.repumper_on = True
 
     def update_mot(self, **kwargs):
         for key, value in kwargs.items():
@@ -282,28 +287,40 @@ class RealTimeSimulation:
             repumper; it is integrated with RK4 at the motional dt.
         '''
         G = self.linewidth
+        # near-resonant drive from the cooling beams and/or the imaging laser
+        W_cool = 0.0
         if self.cooling_on:
             s = self.cfg.mot.Isat_saturation
             detuning = self.cfg.mot.detuning * G
-            W = (G / 2) * s / (1 + (2 * detuning / G) ** 2)
-            rho = W / (2 * W + G)                 # excited fraction (bright atoms)
-        else:
-            rho = 0.0                             # no light -> no scattering
-        repump = 1e6 if self.repumper_on else 0.0
-        b = 1e-3                                   # excited-state leak to dark
+            W_cool = (G / 2) * s / (1 + (2 * detuning / G) ** 2)
+        W_img = 0.0
+        if self.imaging_on:
+            W_img = (G / 2) * self.cfg.imaging_saturation   # resonant beam
+        W = W_cool + W_img
+        rho = W / (2 * W + G) if W > 0 else 0.0    # excited fraction (bright atoms)
 
-        def dDdt(D):
-            return G * b * rho * (1 - D) - repump * D
+        repump = 1e6 if self.repumper_on else 0.0
+        b = 1e-3                                    # excited-state leak to dark
+
+        # dD/dt = a*(1 - D) - repump*D = a - (a + repump)*D  (a = leak rate).
+        # This is stiff (repump ~ 1e6/s), so integrate it EXACTLY over dt rather
+        # than with RK4 (which is unstable for repump*dt >> 1).
+        a = G * b * rho
+        rate = a + repump
         D = self.dark_fraction
-        k1 = dDdt(D); k2 = dDdt(D + 0.5 * dt * k1)
-        k3 = dDdt(D + 0.5 * dt * k2); k4 = dDdt(D + dt * k3)
-        D = min(max(D + dt / 6 * (k1 + 2 * k2 + 2 * k3 + k4), 0.0), 1.0)
-        self.dark_fraction = D
+        if rate > 0:
+            D_ss = a / rate
+            D = D_ss + (D - D_ss) * np.exp(-rate * dt)
+        self.dark_fraction = min(max(D, 0.0), 1.0)
+        D = self.dark_fraction
 
         Ne = rho * (1 - D)
         self.populations = np.array([(1 - rho) * (1 - D), Ne, D])
-        self.scattering_rate = G * Ne              # photons/s per bright atom
-        self.bright_fraction = 1 - D               # atoms that feel the light
+        self.scattering_rate = G * Ne              # total fluorescence (cool+imaging)
+        self.bright_fraction = 1 - D               # atoms that can scatter light
+        # recoil heating: cooling light always heats; imaging only if enabled
+        heat_W = W_cool + (W_img if self.cfg.imaging_heats else 0.0)
+        self.heating_rate = self.scattering_rate * (heat_W / W if W > 0 else 0.0)
 
     def _acceleration_fn(self):
         xp = backend.get_array_module(self.X)
@@ -356,12 +373,12 @@ class RealTimeSimulation:
         _, X, V = integrate(accel, self.X, self.V, dt, dt, record=False)
         self.X, self.V = X, V
 
-        if self.cfg.recoil_heating and self.scattering_rate > 0:
+        if self.cfg.recoil_heating and self.heating_rate > 0:
             # random-walk momentum diffusion from absorption + spontaneous
             # emission; heating_factor calibrates the steady-state temperature.
             xp = backend.get_array_module(self.V)
             std = self.cfg.heating_factor * self.v_recoil \
-                * np.sqrt(2 * self.scattering_rate * dt)
+                * np.sqrt(2 * self.heating_rate * dt)
             self.V = self.V + std * xp.random.standard_normal(self.V.shape)
 
         self.time += dt
@@ -379,9 +396,7 @@ class RealTimeSimulation:
             imaging laser is on, its illumination -- so atoms remain visible in a
             dark dipole trap. '''
         X = backend.asnumpy(self.X)
-        weight = float(self.populations[1])
-        if self.imaging_on:
-            weight += self.cfg.imaging_scatter
+        weight = float(self.populations[1])   # excited population = fluorescence
         return X, weight
 
     def temperature(self):
