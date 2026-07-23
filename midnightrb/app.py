@@ -32,6 +32,7 @@ class TrapSimulatorApp:
         self.running = False
         self.batch = 6
         self._speed = self.cfg.speed
+        self._panel_w = 360        # left control-panel width
 
         # cross-thread buffers (guarded by self.lock)
         self._pub = None       # (X, weight, status) for the camera
@@ -40,6 +41,8 @@ class TrapSimulatorApp:
         self._report = None     # slow-cadence transfer/level report
         self._last_report = 0.0
         self.report_interval = 2.0  # seconds between reports
+        self._spec_request = None   # pending spectroscopy sweep parameters
+        self._spec_status = ''      # spectroscopy progress text
 
         self.estimator = CoefficientEstimator(self.sim.atom, self._get_op,
                                               self._put_coeffs, cadence=0.05)
@@ -59,6 +62,14 @@ class TrapSimulatorApp:
 
     def _physics_loop(self):
         while self.running:
+            if self._spec_request is not None:
+                params = self._spec_request
+                self._spec_request = None
+                try:
+                    self._run_spectroscopy(params)
+                except Exception as exc:          # keep the loop alive on error
+                    self._spec_status = 'spectroscopy error: %s' % exc
+                continue
             with self.lock:
                 if self._coeff is not None:
                     c = self._coeff; self._coeff = None
@@ -106,6 +117,85 @@ class TrapSimulatorApp:
     def _reset_cloud(self, s, a):
         with self.lock: self.sim.reset_cloud()
 
+    def _run_spec_clicked(self, s, a):
+        ''' Queue a spectroscopy sweep (the physics thread runs it). '''
+        if self._spec_request is None:
+            self._spec_request = dict(
+                start=dpg.get_value('spec_start'),
+                stop=dpg.get_value('spec_stop'),
+                n=max(2, int(dpg.get_value('spec_n'))),
+                settle=max(1, int(dpg.get_value('spec_settle'))))
+
+    def _run_spectroscopy(self, p):
+        ''' Sweep the cooling detuning, settle at each point, save a numbered
+            camera frame, and record the total fluorescence vs detuning (the
+            spectrum). Runs in the physics thread, publishing as it goes so the
+            live view shows the sweep. Output goes to spectroscopy_output/. '''
+        import os
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+        import matplotlib as mpl
+
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        out = os.path.join(root, 'spectroscopy_output')
+        os.makedirs(out, exist_ok=True)
+
+        dets = np.linspace(p['start'], p['stop'], p['n'])
+        with self.lock:
+            orig = self.sim.cfg.mot.detuning
+        frames, signal, temps = [], [], []
+        for i, d in enumerate(dets):
+            if not self.running:
+                break
+            with self.lock:
+                self.sim.update_mot(detuning=float(d))
+            for _ in range(p['settle']):
+                if not self.running:
+                    break
+                with self.lock:
+                    for _ in range(self.batch):
+                        self.sim.step()
+                    X, w = self.sim.snapshot()
+                    self._pub = (X, w, self.sim.status())
+                    self._op = self.sim.operating_point()
+                time.sleep(0.0005)
+            with self.lock:
+                X, w = self.sim.snapshot()
+                n_atoms = self.sim.n_atoms()
+                temp = self.sim.display_temperature()
+                frame = self.cam.intensity_frame(X, w, center=self.sim.trap.center)
+            frames.append(frame)
+            # collected fluorescence = light within the camera frame, so atoms
+            # that disperse out of view (e.g. at blue detuning) drop the signal
+            signal.append(float(frame.sum()))
+            temps.append(temp)
+            _ = n_atoms
+            self._spec_status = 'running: %d/%d   detuning=%+.2f G' % (i + 1, len(dets), d)
+
+        with self.lock:                          # restore the original detuning
+            self.sim.update_mot(detuning=orig)
+
+        # save frames on a common brightness scale so the resonance is visible
+        scale = max((f.max() for f in frames), default=1.0) + 1e-12
+        cmap = mpl.colormaps[self.cfg.camera.colormap]
+        for i, (d, f) in enumerate(zip(dets, frames)):
+            rgba = cmap(np.clip(f / scale, 0.0, 1.0))
+            plt.imsave(os.path.join(out, 'spec_%03d_det%+.2fG.png' % (i, d)), rgba)
+        dets = dets[:len(signal)]
+        np.savetxt(os.path.join(out, 'spectrum.txt'),
+                   np.column_stack([dets, signal, temps]),
+                   header='detuning[linewidths]  fluorescence_signal[arb]  T[K]')
+        fig, ax = plt.subplots(figsize=(7, 4))
+        ax.plot(dets, signal, 'o-', color='crimson')
+        ax.set_xlabel('cooling detuning (linewidths)')
+        ax.set_ylabel('fluorescence signal (arb.)')
+        ax.set_title('Rb-87 MOT fluorescence spectrum')
+        ax.grid(True, ls='--', lw=0.5)
+        fig.tight_layout(); fig.savefig(os.path.join(out, 'spectrum.png'), dpi=140)
+        plt.close('all')
+        self._spec_status = 'done: %d frames + spectrum -> %s' % (len(frames), out)
+
     def _apply_config(self, s, a):
         with self.lock:
             self.sim.update_mot(power=dpg.get_value('mot_power'),
@@ -138,16 +228,29 @@ class TrapSimulatorApp:
 
         with dpg.window(tag='primary'):
             with dpg.group(horizontal=True):
-                with dpg.child_window(width=360, autosize_y=True):
+                with dpg.child_window(width=self._panel_w, autosize_y=True):
                     with dpg.tab_bar():
                         self._tab_configuration(c)
                         self._tab_controls()
                         self._tab_report()
+                        self._tab_spectroscopy()
                         self._tab_camera(c)
-                with dpg.child_window(autosize_x=True, autosize_y=True):
-                    dpg.add_text('', tag='status')
-                    dpg.add_image('cam_tex', width=512, height=512)
+                with dpg.child_window(autosize_x=True, autosize_y=True,
+                                      tag='right_panel'):
+                    dpg.add_text('', tag='status', wrap=520)
+                    dpg.add_image('cam_tex', width=512, height=512, tag='cam_image')
         dpg.set_primary_window('primary', True)
+
+    def _on_resize(self):
+        ''' Keep the camera image square and as large as fits, and wrap the
+            status text to the panel width, whatever the window size. '''
+        vw = dpg.get_viewport_client_width()
+        vh = dpg.get_viewport_client_height()
+        right_w = max(140, vw - self._panel_w - 28)
+        right_h = max(140, vh - 24)
+        size = int(max(140, min(right_w - 8, right_h - 64)))
+        dpg.configure_item('cam_image', width=size, height=size)
+        dpg.configure_item('status', wrap=right_w - 8)
 
     def _tab_configuration(self, c):
         with dpg.tab(label='Configuration'):
@@ -217,6 +320,23 @@ class TrapSimulatorApp:
             dpg.add_separator()
             dpg.add_text('waiting for data...', tag='report_text', wrap=330)
 
+    def _tab_spectroscopy(self):
+        with dpg.tab(label='Spectroscopy'):
+            dpg.add_text('Sweep the cooling detuning; save a frame per point',
+                         color=(150, 150, 150), wrap=330)
+            dpg.add_input_float(label='start (linewidths)', tag='spec_start',
+                                default_value=-4.0, step=0.5, format='%.2f')
+            dpg.add_input_float(label='stop (linewidths)', tag='spec_stop',
+                                default_value=1.0, step=0.5, format='%.2f')
+            dpg.add_input_int(label='points', tag='spec_n', default_value=21, step=1)
+            dpg.add_input_int(label='settle (frames/point)', tag='spec_settle',
+                              default_value=40, step=5)
+            dpg.add_spacer(height=6)
+            dpg.add_button(label='Run spectroscopy', callback=self._run_spec_clicked,
+                           width=-1, height=34)
+            dpg.add_text('saved to spectroscopy_output/', color=(120, 120, 120), wrap=330)
+            dpg.add_text('', tag='spec_status', wrap=330)
+
     def _tab_camera(self, c):
         with dpg.tab(label='Camera'):
             dpg.add_slider_float(label='FOV (mm)', tag='cam_fov',
@@ -241,6 +361,7 @@ class TrapSimulatorApp:
             report = self._report
         if report is not None:
             self._render_report(report)
+        dpg.set_value('spec_status', self._spec_status)
         if pub is not None:
             X, weight, st = pub
             dpg.set_value('cam_tex', self.cam.render_flat(X, weight))
@@ -292,6 +413,8 @@ class TrapSimulatorApp:
         dpg.create_viewport(title='MidnightTrapsfRb - optical trap cell', width=920, height=620)
         dpg.setup_dearpygui()
         dpg.show_viewport()
+        dpg.set_viewport_resize_callback(lambda *a: self._on_resize())
+        self._on_resize()
 
         self.running = True
         physics = threading.Thread(target=self._physics_loop, daemon=True)

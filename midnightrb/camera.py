@@ -27,12 +27,10 @@ class Camera:
         horizontal, vertical = axes[0], axes[1]
         return horizontal, vertical
 
-    def render(self, X, weight=1.0, center=(0.0, 0.0, 0.0)):
-        ''' Build an RGBA frame from atom positions X (N,3) in metres.
-
-            weight: scalar or per-atom fluorescence brightness.
-            center: trap centre placed at the middle of the frame.
-        '''
+    def intensity_frame(self, X, weight=1.0, center=(0.0, 0.0, 0.0)):
+        ''' Raw (unnormalised) blurred fluorescence intensity map, HxW. This is
+            the physical signal before exposure/colour mapping; its sum is the
+            total collected fluorescence, useful for spectroscopy. '''
         cfg = self.cfg
         W, H = cfg.resolution
         ax_h, ax_v = self._image_axes()
@@ -43,25 +41,34 @@ class Camera:
         v = X[:, ax_v] - c[ax_v]
         w = weight if np.ndim(weight) else float(weight)
 
-        # bin atoms into pixels (v is the row index -> vertical)
         frame, _, _ = np.histogram2d(
             v, u, bins=[H, W],
             range=[[-half, half], [-half, half]],
             weights=(w * np.ones(len(X)) if np.ndim(w) == 0 else w))
         frame = np.flipud(frame)  # image row 0 at the top
-
-        # optical blur
         if cfg.psf_sigma_px > 0:
             frame = gaussian_filter(frame, cfg.psf_sigma_px)
+        return frame
 
-        # auto-scaling exposure: track the peak so a bright cloud fills the range
-        peak = frame.max()
-        if peak > 0:
-            self._peak = 0.9 * self._peak + 0.1 * peak
-        norm = frame / (self._peak + 1e-12) * cfg.exposure
-        norm = np.clip(norm, 0.0, 1.0)
+    def render(self, X, weight=1.0, center=(0.0, 0.0, 0.0), scale=None):
+        ''' Build an RGBA frame from atom positions X (N,3) in metres.
 
-        # sensor read noise
+            weight: scalar or per-atom fluorescence brightness.
+            center: trap centre placed at the middle of the frame.
+            scale : if given, normalise by this fixed value instead of the
+                    auto-tracked peak (so a set of frames share one brightness
+                    scale -- used for spectroscopy).
+        '''
+        cfg = self.cfg
+        frame = self.intensity_frame(X, weight, center)
+
+        if scale is None:
+            peak = frame.max()
+            if peak > 0:
+                self._peak = 0.9 * self._peak + 0.1 * peak
+            scale = self._peak
+        norm = np.clip(frame / (scale + 1e-12) * cfg.exposure, 0.0, 1.0)
+
         if cfg.read_noise > 0:
             norm = np.clip(norm + cfg.read_noise * np.random.standard_normal(norm.shape),
                            0.0, 1.0)

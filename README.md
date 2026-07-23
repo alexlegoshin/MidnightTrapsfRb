@@ -83,7 +83,15 @@ python run.py                        # or:  python -m midnightrb
   trap depth); the status line shows `T(view)`, the temperature of atoms still in
   frame, because after a transfer the untrapped atoms fly off and would otherwise
   dominate a whole-cloud average.
+- **Spectroscopy** — one button sweeps the cooling detuning over a range you
+  choose and saves a numbered camera frame per point plus a fluorescence-vs-
+  detuning spectrum into `spectroscopy_output/`. The MOT fluorescence peaks just
+  red of resonance and collapses on the blue side (where the trap turns
+  anti-trapping) — a good check that the model behaves like a real MOT.
 - **Camera** — field of view, optical blur, exposure, colormap and viewing axis.
+
+The window is fully resizable; the camera view stays square and grows to fill the
+space, and the controls wrap to fit.
 
 Try: cool with beams + repumper → open the Report tab → hit *Recapture* and watch
 the recaptured fraction settle → turn the repumper off and watch the atoms pump
@@ -128,6 +136,12 @@ needs. See the MOTorNOT README for the full equations; in brief:
 - **Recoil heating & gravity** — photon-recoil momentum diffusion lets the MOT
   settle at a realistic finite size (~Doppler-limit temperature) instead of
   collapsing to a point, and gravity makes an untrapped cloud fall.
+- **Cell & recapture** — the atoms live in a vacuum cell with reflecting walls,
+  so an untrapped cloud stays localised (and its velocity stays bounded) instead
+  of accelerating away for ever. The MOT force is tapered to the beam radius and
+  rolls off past the capture velocity, so switching the cooling beams off and
+  back on disperses and then reassembles the cloud, just as a real MOT recaptures
+  atoms from the cell.
 
 ### Staying real-time
 
