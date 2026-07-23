@@ -83,15 +83,17 @@ python run.py                        # or:  python -m midnightrb
   trap depth); the status line shows `T(view)`, the temperature of atoms still in
   frame, because after a transfer the untrapped atoms fly off and would otherwise
   dominate a whole-cloud average.
-- **Spectroscopy** — one button sweeps the cooling detuning over a range you
-  choose and saves a numbered camera frame per point plus a fluorescence-vs-
-  detuning spectrum into `spectroscopy_output/`. The MOT fluorescence peaks just
-  red of resonance and collapses on the blue side (where the trap turns
-  anti-trapping) — a good check that the model behaves like a real MOT.
+- **Spectroscopy** — one button sweeps the cooling-laser detuning (in **MHz**
+  from the Rb-87 D2 F=2→F′=3 resonance, with a start / stop / step you set) and
+  saves a numbered camera frame per point plus a fluorescence-vs-detuning
+  spectrum into `spectroscopy_output/`. The MOT fluorescence peaks just red of
+  resonance and collapses on the blue side (where the trap turns anti-trapping) —
+  a good check that the model behaves like a real MOT.
 - **Camera** — field of view, optical blur, exposure, colormap and viewing axis.
 
-The window is fully resizable; the camera view stays square and grows to fill the
-space, and the controls wrap to fit.
+The window is fully resizable and the divider between the controls and the camera
+can be dragged; the camera view stays square and grows to fill the space, and the
+status text wraps to fit.
 
 Try: cool with beams + repumper → open the Report tab → hit *Recapture* and watch
 the recaptured fraction settle → turn the repumper off and watch the atoms pump

@@ -32,7 +32,7 @@ class TrapSimulatorApp:
         self.running = False
         self.batch = 6
         self._speed = self.cfg.speed
-        self._panel_w = 360        # left control-panel width
+        self._img_size = 0         # current camera image size (px)
 
         # cross-thread buffers (guarded by self.lock)
         self._pub = None       # (X, weight, status) for the camera
@@ -123,14 +123,15 @@ class TrapSimulatorApp:
             self._spec_request = dict(
                 start=dpg.get_value('spec_start'),
                 stop=dpg.get_value('spec_stop'),
-                n=max(2, int(dpg.get_value('spec_n'))),
+                step=dpg.get_value('spec_step'),
                 settle=max(1, int(dpg.get_value('spec_settle'))))
 
     def _run_spectroscopy(self, p):
-        ''' Sweep the cooling detuning, settle at each point, save a numbered
-            camera frame, and record the total fluorescence vs detuning (the
-            spectrum). Runs in the physics thread, publishing as it goes so the
-            live view shows the sweep. Output goes to spectroscopy_output/. '''
+        ''' Sweep the cooling-laser detuning (in MHz from the Rb-87 D2
+            F=2->F'=3 resonance) with a start / stop / step, settle at each
+            point, save a numbered camera frame and record the collected
+            fluorescence vs detuning (the spectrum). Runs in the physics thread,
+            publishing as it goes. Output goes to spectroscopy_output/. '''
         import os
         import matplotlib
         matplotlib.use('Agg')
@@ -141,15 +142,22 @@ class TrapSimulatorApp:
         out = os.path.join(root, 'spectroscopy_output')
         os.makedirs(out, exist_ok=True)
 
-        dets = np.linspace(p['start'], p['stop'], p['n'])
+        # one natural linewidth of detuning equals gamma (in MHz)
+        gamma_MHz = self.sim.atom['gamma'] / 1e6
+        start, stop = float(p['start']), float(p['stop'])
+        if start > stop:
+            start, stop = stop, start
+        step = max(abs(float(p['step'])), 1e-3)
+        dets_MHz = np.arange(start, stop + 0.5 * step, step)
+
         with self.lock:
             orig = self.sim.cfg.mot.detuning
         frames, signal, temps = [], [], []
-        for i, d in enumerate(dets):
+        for i, d_MHz in enumerate(dets_MHz):
             if not self.running:
                 break
             with self.lock:
-                self.sim.update_mot(detuning=float(d))
+                self.sim.update_mot(detuning=float(d_MHz / gamma_MHz))  # -> linewidths
             for _ in range(p['settle']):
                 if not self.running:
                     break
@@ -162,7 +170,6 @@ class TrapSimulatorApp:
                 time.sleep(0.0005)
             with self.lock:
                 X, w = self.sim.snapshot()
-                n_atoms = self.sim.n_atoms()
                 temp = self.sim.display_temperature()
                 frame = self.cam.intensity_frame(X, w, center=self.sim.trap.center)
             frames.append(frame)
@@ -170,8 +177,7 @@ class TrapSimulatorApp:
             # that disperse out of view (e.g. at blue detuning) drop the signal
             signal.append(float(frame.sum()))
             temps.append(temp)
-            _ = n_atoms
-            self._spec_status = 'running: %d/%d   detuning=%+.2f G' % (i + 1, len(dets), d)
+            self._spec_status = 'running: %d/%d   detuning=%+.1f MHz' % (i + 1, len(dets_MHz), d_MHz)
 
         with self.lock:                          # restore the original detuning
             self.sim.update_mot(detuning=orig)
@@ -179,16 +185,16 @@ class TrapSimulatorApp:
         # save frames on a common brightness scale so the resonance is visible
         scale = max((f.max() for f in frames), default=1.0) + 1e-12
         cmap = mpl.colormaps[self.cfg.camera.colormap]
-        for i, (d, f) in enumerate(zip(dets, frames)):
+        for i, (d_MHz, f) in enumerate(zip(dets_MHz, frames)):
             rgba = cmap(np.clip(f / scale, 0.0, 1.0))
-            plt.imsave(os.path.join(out, 'spec_%03d_det%+.2fG.png' % (i, d)), rgba)
-        dets = dets[:len(signal)]
+            plt.imsave(os.path.join(out, 'spec_%03d_%+06.1fMHz.png' % (i, d_MHz)), rgba)
+        dets_MHz = dets_MHz[:len(signal)]
         np.savetxt(os.path.join(out, 'spectrum.txt'),
-                   np.column_stack([dets, signal, temps]),
-                   header='detuning[linewidths]  fluorescence_signal[arb]  T[K]')
+                   np.column_stack([dets_MHz, signal, temps]),
+                   header='detuning[MHz]  fluorescence_signal[arb]  T[K]')
         fig, ax = plt.subplots(figsize=(7, 4))
-        ax.plot(dets, signal, 'o-', color='crimson')
-        ax.set_xlabel('cooling detuning (linewidths)')
+        ax.plot(dets_MHz, signal, 'o-', color='crimson')
+        ax.set_xlabel("cooling detuning from F=2->F'=3 resonance (MHz)")
         ax.set_ylabel('fluorescence signal (arb.)')
         ax.set_title('Rb-87 MOT fluorescence spectrum')
         ax.grid(True, ls='--', lw=0.5)
@@ -227,30 +233,49 @@ class TrapSimulatorApp:
                                 format=dpg.mvFormat_Float_rgba, tag='cam_tex')
 
         with dpg.window(tag='primary'):
-            with dpg.group(horizontal=True):
-                with dpg.child_window(width=self._panel_w, autosize_y=True):
-                    with dpg.tab_bar():
-                        self._tab_configuration(c)
-                        self._tab_controls()
-                        self._tab_report()
-                        self._tab_spectroscopy()
-                        self._tab_camera(c)
-                with dpg.child_window(autosize_x=True, autosize_y=True,
-                                      tag='right_panel'):
-                    dpg.add_text('', tag='status', wrap=520)
-                    dpg.add_image('cam_tex', width=512, height=512, tag='cam_image')
+            # a resizable two-column table: drag the divider to resize the panel
+            with dpg.table(header_row=False, resizable=True, borders_innerV=True,
+                           policy=dpg.mvTable_SizingStretchProp):
+                dpg.add_table_column(init_width_or_weight=0.36)
+                dpg.add_table_column(init_width_or_weight=0.64)
+                with dpg.table_row():
+                    with dpg.child_window(autosize_x=True, autosize_y=True):
+                        with dpg.tab_bar():
+                            self._tab_configuration(c)
+                            self._tab_controls()
+                            self._tab_report()
+                            self._tab_spectroscopy()
+                            self._tab_camera(c)
+                    with dpg.child_window(autosize_x=True, autosize_y=True,
+                                          tag='right_panel'):
+                        dpg.add_text('', tag='status', wrap=520)
+                        dpg.add_image('cam_tex', width=512, height=512, tag='cam_image')
+
+        # give every control field a compact fixed width so its label fits
+        # beside it in the panel (the panel divider is draggable if you want more)
+        for tag in ('mot_power', 'mot_detuning', 'mot_radius', 'mot_grad',
+                    'dip_type', 'dip_depth', 'dip_waist', 'dip_wl',
+                    'cloud_N', 'cloud_T', 'cloud_sigma', 'sim_speed',
+                    'spec_start', 'spec_stop', 'spec_step', 'spec_settle',
+                    'cam_fov', 'cam_psf', 'cam_exposure', 'cam_cmap', 'cam_axis'):
+            if dpg.does_item_exist(tag):
+                dpg.configure_item(tag, width=118)
         dpg.set_primary_window('primary', True)
 
-    def _on_resize(self):
-        ''' Keep the camera image square and as large as fits, and wrap the
-            status text to the panel width, whatever the window size. '''
-        vw = dpg.get_viewport_client_width()
-        vh = dpg.get_viewport_client_height()
-        right_w = max(140, vw - self._panel_w - 28)
-        right_h = max(140, vh - 24)
-        size = int(max(140, min(right_w - 8, right_h - 64)))
-        dpg.configure_item('cam_image', width=size, height=size)
-        dpg.configure_item('status', wrap=right_w - 8)
+    def _fit_layout(self):
+        ''' Keep the camera image square and as large as fits the (resizable)
+            right panel, and wrap the status text to its width. Runs every frame,
+            so it tracks both window resizes and the divider being dragged. '''
+        if not dpg.does_item_exist('right_panel'):
+            return
+        w, h = dpg.get_item_rect_size('right_panel')
+        if w <= 1 or h <= 1:
+            return
+        size = int(max(140, min(w - 16, h - 64)))
+        if size != self._img_size:
+            dpg.configure_item('cam_image', width=size, height=size)
+            dpg.configure_item('status', wrap=max(120, w - 16))
+            self._img_size = size
 
     def _tab_configuration(self, c):
         with dpg.tab(label='Configuration'):
@@ -322,20 +347,23 @@ class TrapSimulatorApp:
 
     def _tab_spectroscopy(self):
         with dpg.tab(label='Spectroscopy'):
-            dpg.add_text('Sweep the cooling detuning; save a frame per point',
-                         color=(150, 150, 150), wrap=330)
-            dpg.add_input_float(label='start (linewidths)', tag='spec_start',
-                                default_value=-4.0, step=0.5, format='%.2f')
-            dpg.add_input_float(label='stop (linewidths)', tag='spec_stop',
-                                default_value=1.0, step=0.5, format='%.2f')
-            dpg.add_input_int(label='points', tag='spec_n', default_value=21, step=1)
-            dpg.add_input_int(label='settle (frames/point)', tag='spec_settle',
+            dpg.add_text("Scan the cooling laser around the Rb-87 D2 "
+                         "F=2->F'=3 line (780.24 nm). Detuning is given in MHz "
+                         "from resonance (1 linewidth = 6.07 MHz).",
+                         color=(150, 150, 150), wrap=280)
+            dpg.add_input_float(label='start (MHz)', tag='spec_start',
+                                default_value=-30.0, step=1.0, format='%.1f')
+            dpg.add_input_float(label='stop (MHz)', tag='spec_stop',
+                                default_value=6.0, step=1.0, format='%.1f')
+            dpg.add_input_float(label='step (MHz)', tag='spec_step',
+                                default_value=2.0, step=0.5, format='%.2f')
+            dpg.add_input_int(label='settle (frames/pt)', tag='spec_settle',
                               default_value=40, step=5)
             dpg.add_spacer(height=6)
             dpg.add_button(label='Run spectroscopy', callback=self._run_spec_clicked,
                            width=-1, height=34)
-            dpg.add_text('saved to spectroscopy_output/', color=(120, 120, 120), wrap=330)
-            dpg.add_text('', tag='spec_status', wrap=330)
+            dpg.add_text('saved to spectroscopy_output/', color=(120, 120, 120), wrap=280)
+            dpg.add_text('', tag='spec_status', wrap=280)
 
     def _tab_camera(self, c):
         with dpg.tab(label='Camera'):
@@ -356,6 +384,7 @@ class TrapSimulatorApp:
     # -------------------------------------------------------- per-frame ---
     def _update_frame(self):
         t0 = time.perf_counter()
+        self._fit_layout()
         with self.lock:
             pub = self._pub
             report = self._report
@@ -413,8 +442,7 @@ class TrapSimulatorApp:
         dpg.create_viewport(title='MidnightTrapsfRb - optical trap cell', width=920, height=620)
         dpg.setup_dearpygui()
         dpg.show_viewport()
-        dpg.set_viewport_resize_callback(lambda *a: self._on_resize())
-        self._on_resize()
+        dpg.set_viewport_resize_callback(lambda *a: self._fit_layout())
 
         self.running = True
         physics = threading.Thread(target=self._physics_loop, daemon=True)
