@@ -9,8 +9,40 @@ off and watch the cloud cool, glow, go dark or fall in real time.
 *Midnight* (built during many late nights, à la Midnight Club); *Trapsf* =
 **Trap** + **Transfer** (and it conveniently ends in **Rb**).
 
-The physics comes from the [MOTorNOT](https://github.com/alexlegoshin/MOTorNOT)
-library; this repository is the application on top of it.
+## History & design
+
+MidnightTrapsfRb began as a **from-scratch simulation** of Rb-87 MOT cooling and
+recapture into a dipole trap, with its own hand-written physics: 1D Doppler
+cooling, hyperfine level populations with a repumper, Gaussian and optical-lattice
+dipole potentials, and even a quantum (Schrödinger + tunnelling) treatment of the
+recapture.
+
+On careful review that bespoke physics turned out to be broken in most of its
+core blocks: the MOT force had the **wrong sign** (it heated rather than cooled)
+and produced **no spatial restoring force** (so it was not actually a trap); the
+dipole potential came out **repulsive** instead of attractive; the level-transition
+model was numerically **inert**; and the quantum recapture was **dimensionally
+inconsistent**. Rather than patch a pile of subtle sign and unit bugs, the
+project switched to a dedicated engine —
+[**MOTorNOT**](https://github.com/alexlegoshin/MOTorNOT) — and became the
+application layer on top of it.
+
+**What that trade cost and bought:**
+
+- **Better:** MOTorNOT's MOT force is a correct semiclassical model (σ± / Zeeman
+  sublevels, Doppler shift, saturation), with real magnetic-field geometry and a
+  correct AC-Stark dipole potential. All of it is tested and physical.
+- **Worse:** MOTorNOT is **purely semiclassical** — it does *not* attempt the
+  quantum bound-state / tunnelling recapture the original aimed at. For the
+  many-µK trap depths and thermal atoms simulated here the classical
+  energy criterion dominates, so this is an acceptable simplification.
+- MOTorNOT originally had **no** dipole trap, level dynamics, ensemble
+  diagnostics or recapture — these were added *to the library* (on correct
+  foundations), so the ambition of the original project lives on.
+
+The result is a responsive, visual **simulator** of the trap cell with
+configurable lasers, repumper, a choice of dipole potential, a live camera and a
+recapture/level report.
 
 ## Install & run
 
@@ -26,49 +58,74 @@ pip install -r requirements.txt
 python run.py                        # or:  python -m midnightrb
 ```
 
-## What you can do
+## Using it
 
-- **Configuration tab** — set the MOT (power, detuning, beam radius, B-gradient),
-  the dipole trap (wavelength, power, waist, lattice on/off) and the initial
-  cloud (atom number, temperature, size), then *Apply & reset cloud*.
-- **Controls tab** — toggle the cooling beams, repumper and dipole trap; hit
-  **Recapture into dipole** to cut the MOT and hold the dipole in one click;
-  set the simulation **speed** and the fast/full model switch.
-- **Camera tab** — field of view, optical blur, exposure, colormap and viewing
-  axis of the simulated camera.
+- **Configuration** — set the MOT (power, detuning, beam radius, B-gradient), the
+  dipole trap (**potential**: Gaussian well / optical lattice / crossed beams,
+  plus **depth**, waist and wavelength) and the initial cloud (atom number,
+  temperature, size); *Apply & reset cloud*.
+- **Controls** — toggle the cooling beams, repumper and dipole trap; hit
+  **Recapture into dipole** to cut the MOT and hold the dipole in one click; set
+  the simulation **speed** and the fast/full model switch.
+- **Report** (updates every ~2 s) — how many atoms were recaptured (and the
+  fraction), the trapped vs. whole-cloud temperature, and the internal-state
+  level distribution (F=2 / F′=3 / dark F=1), plus the active trap parameters.
+- **Camera** — field of view, optical blur, exposure, colormap and viewing axis.
 
-Try: cool with beams + repumper → turn the repumper off and watch the cloud pump
-dark and fall → or hit *Recapture* to catch the coldest atoms in the dipole trap.
+Try: cool with beams + repumper → open the Report tab → hit *Recapture* and watch
+the recaptured fraction settle → turn the repumper off and watch the atoms pump
+dark and fall.
 
-## How it stays real-time
+## The physics
+
+The engine composes MOTorNOT's building blocks and adds what a *live* cloud
+needs. See the MOTorNOT README for the full equations; in brief:
+
+- **MOT force** — the semiclassical scattering force `F = Σ_b ħ k_b R_b(x,v)`
+  with per-beam rates that carry the Doppler shift `k·v`, the Zeeman shift
+  `m·gF·μ_B·|B|/ħ` and σ± polarisation weights. This gives both the velocity
+  damping and the spatial restoring force.
+- **Dipole potential** — the far-detuned AC-Stark well
+  `U = −(3πc²/2ω₀³)·Γ·(1/(ω₀−ω)+1/(ω₀+ω))·I(r)`, red-detuned so `U < 0`.
+  Selectable as a single Gaussian well, a retro-reflected 1D lattice (wells every
+  `λ/2`), or two crossed beams (a tight 3D trap). The laser power is solved from
+  the requested trap depth.
+- **Level dynamics & fluorescence** — a 3-level rate model (F=2 ↔ excited,
+  spontaneous decay with a dark-state leak, repumper). The bright fraction scales
+  the MOT force (dark atoms feel no light) and the excited-state population sets
+  the fluorescence the camera sees, so turning the repumper off makes the cloud
+  go dark.
+- **Recapture** — an atom is bound if `E = ½mv² + U(x) < 0`; the Report tab
+  counts those.
+- **Recoil heating & gravity** — photon-recoil momentum diffusion lets the MOT
+  settle at a realistic finite size (~Doppler-limit temperature) instead of
+  collapsing to a point, and gravity makes an untrapped cloud fall.
+
+### Staying real-time
 
 The full 6-beam MOT force is accurate but expensive. For interactivity the app
-runs a **linearised model** near the trap centre (a spring + damping fit,
-`F ≈ F₀ − κ·(x − c) − β·v`), which is ~50× faster and, for the trapped cloud,
-matches the full force to ~0.1%.
+runs a **linearised model** near the trap centre (`F ≈ F₀ − κ·(x−c) − β·v`),
+~50× faster and, for the trapped cloud, matching the full force to ~0.1%.
 
-Those coefficients are not frozen. A background **CoefficientEstimator** keeps
+Those coefficients are not frozen: a background **CoefficientEstimator** keeps
 its own full 6-beam model and continuously re-fits `κ, β, F₀` around the *live*
-cloud centroid, also reporting the linear-vs-full **model error** shown in the
-status line. Every coefficient set is tagged with a config generation, so
-changing a MOT parameter can never apply stale coefficients — the fast model
-self-corrects while staying cheap.
+cloud centroid, reporting the linear-vs-full **model error** in the status line.
+Each coefficient set is tagged with a config generation, so changing a MOT
+parameter can never apply stale coefficients — the fast model self-corrects while
+staying cheap. The integrator timestep is auto-capped to the tightest active trap
+frequency so even the MHz optical lattice stays stable under the speed
+multiplier.
 
-Three threads cooperate through short-held locks: a **physics** thread (owns the
-simulation, advances it and publishes snapshots), the **estimator** thread, and
-the **GUI** thread (renders the camera and handles input) — so the window stays
-responsive no matter how heavy the physics is. A **speed** control scales
-sim-time per frame for a clear, watchable evolution.
-
-Photon-recoil heating and gravity are included so the MOT settles at a realistic
-finite size (~Doppler-limit temperature) and an untrapped cloud falls.
+Three threads cooperate through short-held locks — a **physics** thread (owns the
+simulation), the **estimator**, and the **GUI** (renders the camera and handles
+input) — so the window stays responsive no matter how heavy the physics is.
 
 ## Layout
 
 ```
 midnightrb/
   config.py    dataclasses: MOT / dipole / cloud / camera / sim settings
-  engine.py    RealTimeSimulation + CoefficientEstimator (physics controller)
+  engine.py    RealTimeSimulation, DipoleTrapModel, CoefficientEstimator
   camera.py    Camera: atom positions -> simulated IR frame
   app.py       Dear PyGui interface and threading
 run.py         entry point
