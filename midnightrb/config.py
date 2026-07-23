@@ -32,7 +32,9 @@ class DipoleConfig:
     wavelength: float = 1064e-9   # trap laser wavelength, m
     waist: float = 25e-6          # 1/e^2 beam waist, m
     depth_uK: float = 500.0       # target trap depth, micro-Kelvin
-    axis: int = 2                 # propagation axis for single-beam traps
+    axis: int = 0                 # propagation axis for single-beam traps.
+    #                               0 (horizontal) keeps the weak axial direction
+    #                               perpendicular to gravity so atoms don't leak.
 
 
 @dataclass
@@ -66,6 +68,8 @@ class SimConfig:
     gravity: bool = True            # let atoms fall when untrapped
     recoil_heating: bool = True     # photon-recoil momentum diffusion
     heating_factor: float = 0.4     # scales recoil heating (=> Doppler-limit T)
+    imaging_scatter: float = 0.2    # excited fraction under the imaging laser
+    #                                 (makes atoms glow independently of cooling)
     mot: MOTConfig = field(default_factory=MOTConfig)
     dipole: DipoleConfig = field(default_factory=DipoleConfig)
     cloud: CloudConfig = field(default_factory=CloudConfig)

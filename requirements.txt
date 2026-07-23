@@ -1,6 +1,7 @@
-# Physics engine. MOTorNOT is a separate repository/library -- install it first:
+# Physics engine: MOTorNOT, installed from the alexlegoshin FORK (NOT from PyPI --
+# the published package is outdated and lacks the features this app needs):
+#   pip install git+https://github.com/alexlegoshin/MOTorNOT
 #   pip install -e ../MOTorNOT              (local sibling checkout, for development)
-#   pip install git+https://github.com/alexlegoshin/MOTorNOT   (from GitHub)
 # Optional GPU acceleration for MOTorNOT:
 #   pip install "cupy-cuda12x[ctk]"
 

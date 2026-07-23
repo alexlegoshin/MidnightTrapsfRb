@@ -107,6 +107,7 @@ class RealTimeSimulation:
         self.cooling_on = True
         self.repumper_on = True
         self.dipole_on = False
+        self.imaging_on = False        # dedicated illumination laser (see below)
 
         # internal-state populations [F=2, excited, F=1(dark)]
         self.populations = np.array([1.0, 0.0, 0.0])
@@ -174,10 +175,20 @@ class RealTimeSimulation:
     def set_dipole(self, on):
         self.dipole_on = bool(on)
 
+    def set_imaging(self, on):
+        ''' The imaging laser is a separate, near-resonant illumination beam:
+            it makes atoms fluoresce (so they are visible on the camera) even
+            when the cooling beams are off, exactly as a real experiment images
+            atoms held in a dark dipole trap. Modelled as pure illumination
+            here (adds brightness, applies no force). '''
+        self.imaging_on = bool(on)
+
     def recapture(self):
-        ''' One-click MOT -> dipole transfer: cut the MOT, hold the dipole. '''
+        ''' One-click MOT -> dipole transfer: cut the MOT, hold the dipole, and
+            switch on the imaging laser so the transferred atoms stay visible. '''
         self.cooling_on = False
         self.dipole_on = True
+        self.imaging_on = True
 
     def update_mot(self, **kwargs):
         for key, value in kwargs.items():
@@ -326,9 +337,13 @@ class RealTimeSimulation:
     # -------------------------------------------------------- readouts ----
     def snapshot(self):
         ''' Current atom positions (NumPy, N x 3) and the per-atom fluorescence
-            weight (excited-state population) for the camera. '''
+            weight for the camera: scattering from the cooling light plus, if the
+            imaging laser is on, its illumination -- so atoms remain visible in a
+            dark dipole trap. '''
         X = backend.asnumpy(self.X)
         weight = float(self.populations[1])
+        if self.imaging_on:
+            weight += self.cfg.imaging_scatter
         return X, weight
 
     def temperature(self):
@@ -351,6 +366,7 @@ class RealTimeSimulation:
             'cooling': self.cooling_on,
             'repumper': self.repumper_on,
             'dipole': self.dipole_on,
+            'imaging': self.imaging_on,
             'model_error': self.model_error,
         }
 

@@ -46,9 +46,16 @@ recapture/level report.
 
 ## Install & run
 
+> **Important:** install MOTorNOT from **this fork**
+> (`github.com/alexlegoshin/MOTorNOT`), *not* from PyPI. The published
+> `pip install MOTorNOT` is an old version that lacks the dipole traps, level
+> dynamics, diagnostics, recapture and GPU backend this app relies on.
+
 ```bash
-# 1. install the physics engine (separate repo)
-pip install -e ../MOTorNOT          # or: pip install git+https://github.com/alexlegoshin/MOTorNOT
+# 1. install the physics engine from the alexlegoshin fork
+pip install git+https://github.com/alexlegoshin/MOTorNOT
+#    ...or, if you have a local checkout next to this repo:
+#    pip install -e ../MOTorNOT
 #    optional GPU: pip install "cupy-cuda12x[ctk]"
 
 # 2. install the app's own dependencies
@@ -64,9 +71,11 @@ python run.py                        # or:  python -m midnightrb
   dipole trap (**potential**: Gaussian well / optical lattice / crossed beams,
   plus **depth**, waist and wavelength) and the initial cloud (atom number,
   temperature, size); *Apply & reset cloud*.
-- **Controls** — toggle the cooling beams, repumper and dipole trap; hit
-  **Recapture into dipole** to cut the MOT and hold the dipole in one click; set
-  the simulation **speed** and the fast/full model switch.
+- **Controls** — toggle the cooling beams, repumper, dipole trap and the
+  **imaging laser** (illumination that makes atoms glow even with the cooling
+  beams off); hit **Recapture into dipole** to cut the MOT, hold the dipole and
+  switch the imaging laser on in one click; set the simulation **speed** and the
+  fast/full model switch.
 - **Report** (updates every ~2 s) — how many atoms were recaptured (and the
   fraction), the trapped vs. whole-cloud temperature, and the internal-state
   level distribution (F=2 / F′=3 / dark F=1), plus the active trap parameters.
@@ -96,7 +105,17 @@ needs. See the MOTorNOT README for the full equations; in brief:
   the fluorescence the camera sees, so turning the repumper off makes the cloud
   go dark.
 - **Recapture** — an atom is bound if `E = ½mv² + U(x) < 0`; the Report tab
-  counts those.
+  counts those. The transferred fraction is small (a few percent) because the
+  MOT settles at a size much larger than a tight dipole trap — this is real, not
+  a bug (no sub-Doppler compression is modelled). A single beam is oriented
+  **horizontally** by default so gravity acts along a tightly confined direction;
+  a vertical beam would let atoms leak out along its weak axis. The `crossed`
+  geometry holds atoms best.
+- **Imaging** — atoms are only visible while they scatter light. The cooling
+  beams provide that in the MOT, but a dipole trap is dark, so a separate
+  near-resonant **imaging laser** illuminates the trapped atoms (as in a real
+  fluorescence image). It is modelled as pure illumination (adds brightness, no
+  force).
 - **Recoil heating & gravity** — photon-recoil momentum diffusion lets the MOT
   settle at a realistic finite size (~Doppler-limit temperature) instead of
   collapsing to a point, and gravity makes an untrapped cloud fall.

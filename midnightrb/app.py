@@ -86,6 +86,9 @@ class TrapSimulatorApp:
     def _set_dipole(self, s, a):
         with self.lock: self.sim.set_dipole(a)
 
+    def _set_imaging(self, s, a):
+        with self.lock: self.sim.set_imaging(a)
+
     def _set_fast(self, s, a):
         with self.lock: self.sim.cfg.fast_mode = a
 
@@ -98,6 +101,7 @@ class TrapSimulatorApp:
             self._last_report = 0.0   # refresh the report promptly
         dpg.set_value('chk_cooling', self.sim.cooling_on)
         dpg.set_value('chk_dipole', self.sim.dipole_on)
+        dpg.set_value('chk_imaging', self.sim.imaging_on)
 
     def _reset_cloud(self, s, a):
         with self.lock: self.sim.reset_cloud()
@@ -184,6 +188,8 @@ class TrapSimulatorApp:
                              default_value=True, callback=self._set_repumper)
             dpg.add_checkbox(label='Dipole trap', tag='chk_dipole',
                              default_value=False, callback=self._set_dipole)
+            dpg.add_checkbox(label='Imaging laser (illumination)', tag='chk_imaging',
+                             default_value=False, callback=self._set_imaging)
             dpg.add_spacer(height=10)
             dpg.add_button(label='>> Recapture into dipole <<',
                            callback=self._do_recapture, width=-1, height=40)
@@ -247,9 +253,10 @@ class TrapSimulatorApp:
             err_txt = 'n/a' if err != err else '%.1f%%' % (err * 100)
             dpg.set_value('status',
                           'sim t=%7.1f ms   T=%6.1f uK   rms=%.2f mm   fluor=%.3f\n'
-                          'cooling=%s  repumper=%s  dipole=%s    model err=%s    %.0f fps'
+                          'cooling=%s  repumper=%s  dipole=%s  imaging=%s   model err=%s   %.0f fps'
                           % (st['time_ms'], st['T_uK'], st['rms_mm'], st['fluorescence'],
-                             st['cooling'], st['repumper'], st['dipole'], err_txt, fps))
+                             st['cooling'], st['repumper'], st['dipole'], st['imaging'],
+                             err_txt, fps))
 
     def _render_report(self, r):
         txt = (
