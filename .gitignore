@@ -1,2 +1,13 @@
 *.csv
 results_postprocessing/
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.ipynb_checkpoints/
+
+# Build / packaging
+build/
+dist/
+*.spec
