@@ -1,0 +1,4 @@
+# Keep GitHub's language stats meaningful: don't let any future Jupyter
+# notebooks (mostly embedded output/plot images by byte count) skew the
+# repo's reported language away from Python.
+*.ipynb linguist-documentation
