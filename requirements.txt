@@ -9,3 +9,6 @@ numpy
 scipy
 matplotlib
 dearpygui
+
+# Only needed to build the single-file Windows .exe (not for running from source):
+# pyinstaller

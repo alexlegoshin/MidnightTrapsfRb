@@ -14,7 +14,6 @@ __pycache__/
 # Build / packaging
 build/
 dist/
-*.spec
 
 # Spectroscopy output
 spectroscopy_output/

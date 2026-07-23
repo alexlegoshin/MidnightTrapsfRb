@@ -1,5 +1,8 @@
 # MidnightTrapsfRb
 
+> **📦 Latest build:** [**v1.0.0** on the Releases page](https://github.com/alexlegoshin/MidnightTrapsfRb/releases/latest) —
+> download `MidnightTrapsfRb.exe` and run it. No Python, no cloning this repo.
+
 A real-time desktop **optical-trap "cell" simulator** for rubidium-87. It models
 a magneto-optical trap (MOT) and its transfer into an optical dipole trap and
 renders the atoms live, as if you were watching the cell through an IR
@@ -46,6 +49,14 @@ recapture/level report.
 
 ## Install & run
 
+**Windows:** download `MidnightTrapsfRb.exe` from the
+[latest release](https://github.com/alexlegoshin/MidnightTrapsfRb/releases/latest)
+— one self-contained file. Copy it anywhere and double-click; spectroscopy
+sweeps save their output into a `spectroscopy_output/` folder created next to
+the exe.
+
+**From source (Windows / macOS / Linux):**
+
 > **Important:** install MOTorNOT from **this fork**
 > (`github.com/alexlegoshin/MOTorNOT`), *not* from PyPI. The published
 > `pip install MOTorNOT` is an old version that lacks the dipole traps, level
@@ -64,6 +75,16 @@ pip install -r requirements.txt
 # 3. run
 python run.py                        # or:  python -m midnightrb
 ```
+
+**Building the exe yourself** (only needed if you changed the code; requires a
+sibling `../MOTorNOT` checkout):
+
+```bat
+pip install pyinstaller
+build_windows.bat
+```
+
+produces `dist\MidnightTrapsfRb.exe`.
 
 ## Using it
 

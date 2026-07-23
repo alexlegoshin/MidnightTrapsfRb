@@ -10,6 +10,8 @@
       * the GUI thread, which renders the simulated camera and drives the
         controls, never blocking on the physics.
 '''
+import os
+import sys
 import threading
 import time
 import numpy as np
@@ -20,6 +22,15 @@ from .engine import RealTimeSimulation, CoefficientEstimator
 from .camera import Camera
 
 COLORMAPS = ['inferno', 'magma', 'plasma', 'viridis', 'hot', 'gray']
+
+
+def app_root():
+    ''' Directory to save output next to: the frozen exe's own folder, or the
+        repo root when running from source (a PyInstaller onefile exe unpacks
+        to a temp dir that's deleted on exit, so __file__ can't be used there). '''
+    if getattr(sys, 'frozen', False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 class TrapSimulatorApp:
@@ -138,8 +149,7 @@ class TrapSimulatorApp:
         import matplotlib.pyplot as plt
         import matplotlib as mpl
 
-        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        out = os.path.join(root, 'spectroscopy_output')
+        out = os.path.join(app_root(), 'spectroscopy_output')
         os.makedirs(out, exist_ok=True)
 
         # one natural linewidth of detuning equals gamma (in MHz)

@@ -6,7 +6,7 @@
     MOTorNOT (installed as a separate library); this package is the application
     layer on top of it.
 '''
-__version__ = '0.1.0'
+__version__ = '1.0.0'
 
 from .config import (MOTConfig, DipoleConfig, CloudConfig, CameraConfig,
                      SimConfig)
