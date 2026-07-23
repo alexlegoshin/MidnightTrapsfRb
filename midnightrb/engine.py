@@ -17,6 +17,8 @@
     excited-state population sets the fluorescence the camera sees. Turn the
     repumper off and the atoms pump dark -- the glow fades and the cloud drops.
 '''
+import threading
+import time
 import numpy as np
 from scipy.constants import k as kB, hbar, physical_constants
 
@@ -51,6 +53,18 @@ class RealTimeSimulation:
         self.bright_fraction = 1.0
         self.scattering_rate = 0.0
 
+        self.speed = self.cfg.speed
+
+        # linearised-MOT model, refreshed asynchronously by CoefficientEstimator.
+        # config_version is bumped whenever the MOT config changes, so stale
+        # coefficients (fitted under a previous config) are never applied.
+        self.config_version = 0
+        self.center = np.zeros(3)      # linearisation centre (cloud centroid)
+        self.F0 = np.zeros(3)          # full force at the centre (offset)
+        self.kappa = np.zeros(3)       # spring constants per axis
+        self.beta = np.zeros(3)        # damping constants per axis
+        self.model_error = float('nan')  # linear-vs-full force discrepancy
+
         self.time = 0.0
         self._build_mot()
         self._build_dipole()
@@ -62,6 +76,15 @@ class RealTimeSimulation:
         self.mot = mn.six_beam_mot(self.atom, power=m.power, radius=m.radius,
                                    detuning=m.detuning, B_gradient=m.B_gradient,
                                    handedness=m.handedness)
+        self._linearise_mot()
+
+    def _linearise_mot(self):
+        ''' Synchronous one-shot linearisation about the origin. Gives the fast
+            model valid coefficients immediately on start-up and whenever the
+            config changes; the CoefficientEstimator then refines them around
+            the live cloud centroid. '''
+        self.kappa, self.beta, self.F0 = fit_linear_coeffs(self.mot, np.zeros(3))
+        self.center = np.zeros(3)
 
     def _build_dipole(self):
         d = self.cfg.dipole
@@ -99,7 +122,39 @@ class RealTimeSimulation:
     def update_mot(self, **kwargs):
         for key, value in kwargs.items():
             setattr(self.cfg.mot, key, value)
-        self._build_mot()
+        self.config_version += 1        # invalidate stale linear coefficients
+        self._build_mot()               # immediate synchronous refit at origin
+
+    # -------------------------------------------- linear-model plumbing ----
+    def operating_point(self, sample_n=200):
+        ''' A consistent snapshot for the estimator, taken under the caller's
+            lock: cloud centroid and RMS spreads, a random atom subsample for
+            the error metric, and the MOT parameters + config generation. '''
+        X = backend.asnumpy(self.X)
+        V = backend.asnumpy(self.V)
+        n = X.shape[0]
+        idx = np.random.choice(n, size=min(sample_n, n), replace=False)
+        m = self.cfg.mot
+        return {
+            'center': X.mean(axis=0),
+            'rms_x': X.std(axis=0),
+            'rms_v': V.std(axis=0),
+            'sample_X': X[idx].copy(),
+            'sample_V': V[idx].copy(),
+            'mot_params': dict(power=m.power, radius=m.radius, detuning=m.detuning,
+                               B_gradient=m.B_gradient, handedness=m.handedness),
+            'version': self.config_version,
+            'sim_time': self.time,
+        }
+
+    def set_linear_coeffs(self, kappa, beta, F0, center, version, error):
+        ''' Adopt refreshed coefficients only if they were fitted under the
+            current config generation (otherwise they are stale and ignored). '''
+        if version != self.config_version:
+            return False
+        self.kappa, self.beta, self.F0, self.center = kappa, beta, F0, center
+        self.model_error = error
+        return True
 
     def update_dipole(self, **kwargs):
         for key, value in kwargs.items():
@@ -148,19 +203,28 @@ class RealTimeSimulation:
         force_scale = self.bright_fraction if self.cooling_on else 0.0
         cooling_on = self.cooling_on
         dipole_on = self.dipole_on
+        fast = self.cfg.fast_mode
+        kappa = xp.asarray(self.kappa)
+        beta = xp.asarray(self.beta)
+        center = xp.asarray(self.center)
+        F0 = xp.asarray(self.F0)
 
         def accel(Xq, Vq):
             a = grav + xp.zeros_like(Xq)
             if cooling_on and force_scale > 1e-6:
-                a = a + force_scale * self.mot.acceleration(Xq, Vq)
+                if fast:  # linearised force about the live cloud centroid
+                    a = a + force_scale * (F0 - kappa * (Xq - center)
+                                           - beta * Vq) / self.mass
+                else:     # full 6-beam scattering force
+                    a = a + force_scale * self.mot.acceleration(Xq, Vq)
             if dipole_on:
                 a = a + self.trap.acceleration(Xq)
             return a
         return accel
 
     def step(self, dt=None):
-        ''' Advance the simulation by one timestep. '''
-        dt = self.cfg.dt if dt is None else dt
+        ''' Advance the simulation by one timestep (scaled by self.speed). '''
+        dt = self.cfg.dt * self.speed if dt is None else dt
         self._update_populations(dt)
 
         accel = self._acceleration_fn()
@@ -211,4 +275,98 @@ class RealTimeSimulation:
             'cooling': self.cooling_on,
             'repumper': self.repumper_on,
             'dipole': self.dipole_on,
+            'model_error': self.model_error,
         }
+
+
+# ============================ linear-model fitting ==========================
+def fit_linear_coeffs(mot, center, rms_x=None, rms_v=None):
+    ''' Fit F(x, v) ~ F0 - kappa*(x - center) - beta*v by sampling the full MOT
+        force around `center`. Finite-difference steps default to the cloud RMS
+        (so the linear model is tangent over the cloud's actual extent) with a
+        floor to stay well-conditioned. Returns (kappa, beta, F0), each (3,). '''
+    center = np.asarray(center, dtype=float)
+    c = center.reshape(1, 3)
+    zero = np.zeros((1, 3))
+    dx_vec = np.maximum(rms_x if rms_x is not None else np.full(3, 1e-4), 5e-5)
+    dv_vec = np.maximum(rms_v if rms_v is not None else np.full(3, 0.1), 1e-2)
+
+    F0 = backend.asnumpy(mot.force(c, zero))[0]
+    kappa = np.zeros(3)
+    beta = np.zeros(3)
+    for i in range(3):
+        ex = np.zeros((1, 3)); ex[0, i] = dx_vec[i]
+        Fp = backend.asnumpy(mot.force(c + ex, zero))[0, i]
+        Fm = backend.asnumpy(mot.force(c - ex, zero))[0, i]
+        kappa[i] = -(Fp - Fm) / (2 * dx_vec[i])
+        ev = np.zeros((1, 3)); ev[0, i] = dv_vec[i]
+        Fvp = backend.asnumpy(mot.force(c, ev))[0, i]
+        Fvm = backend.asnumpy(mot.force(c, -ev))[0, i]
+        beta[i] = -(Fvp - Fvm) / (2 * dv_vec[i])
+    return kappa, beta, F0
+
+
+def linear_model_error(mot, kappa, beta, F0, center, sample_X, sample_V):
+    ''' Relative RMS discrepancy between the linear force and the full 6-beam
+        force over a cloud subsample -- the validation metric. '''
+    if len(sample_X) == 0:
+        return float('nan')
+    F_full = backend.asnumpy(mot.force(sample_X, sample_V))
+    F_lin = F0 - kappa * (sample_X - center) - beta * sample_V
+    denom = np.sqrt(np.mean(np.sum(F_full ** 2, axis=1))) + 1e-30
+    return float(np.sqrt(np.mean(np.sum((F_full - F_lin) ** 2, axis=1))) / denom)
+
+
+class CoefficientEstimator(threading.Thread):
+    ''' Background supervisor: keeps its own full 6-beam MOT model and, in
+        parallel with the fast simulation, refits the linear coefficients around
+        the live cloud centroid and measures the linear-vs-full error.
+
+        It never touches the running simulation directly. Instead it reads an
+        "operating point" and writes coefficient sets through two callables
+        supplied by the caller (which handle locking):
+
+            get_op()      -> latest operating_point() dict, or None
+            put_coeffs(c) -> hand a coefficient dict back to the sim
+
+        Every coefficient set carries the config generation it was fitted under;
+        the engine's set_linear_coeffs ignores any that no longer match, so a
+        config change can never apply stale coefficients.
+    '''
+
+    def __init__(self, atom, get_op, put_coeffs, cadence=0.05):
+        super().__init__(daemon=True)
+        self.atom = atom
+        self.get_op = get_op
+        self.put_coeffs = put_coeffs
+        self.cadence = cadence
+        self.running = False
+        self._mot = None
+        self._built_version = -1
+
+    def _ensure_mot(self, params, version):
+        if version != self._built_version:
+            self._mot = mn.six_beam_mot(
+                self.atom, power=params['power'], radius=params['radius'],
+                detuning=params['detuning'], B_gradient=params['B_gradient'],
+                handedness=params['handedness'])
+            self._built_version = version
+
+    def run(self):
+        self.running = True
+        while self.running:
+            op = self.get_op()
+            if op is not None:
+                self._ensure_mot(op['mot_params'], op['version'])
+                kappa, beta, F0 = fit_linear_coeffs(
+                    self._mot, op['center'], op['rms_x'], op['rms_v'])
+                error = linear_model_error(
+                    self._mot, kappa, beta, F0, op['center'],
+                    op['sample_X'], op['sample_V'])
+                self.put_coeffs({'kappa': kappa, 'beta': beta, 'F0': F0,
+                                 'center': op['center'], 'version': op['version'],
+                                 'error': error})
+            time.sleep(self.cadence)
+
+    def stop(self):
+        self.running = False

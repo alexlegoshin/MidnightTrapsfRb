@@ -10,4 +10,7 @@ __version__ = '0.1.0'
 
 from .config import (MOTConfig, DipoleConfig, CloudConfig, CameraConfig,
                      SimConfig)
-from .engine import RealTimeSimulation
+from .engine import RealTimeSimulation, CoefficientEstimator
+from .camera import Camera
+# NB: the GUI (`.app`) is imported lazily (see __main__) so the engine and
+# camera can be used headless without requiring Dear PyGui.

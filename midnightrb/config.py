@@ -31,7 +31,7 @@ class DipoleConfig:
 @dataclass
 class CloudConfig:
     ''' Initial atomic ensemble. '''
-    N: int = 2000                 # number of atoms
+    N: int = 800                  # number of atoms
     temperature: float = 300e-6   # initial temperature, K
     sigma_r: float = 0.5e-3       # initial RMS cloud radius, m
 
@@ -52,8 +52,10 @@ class CameraConfig:
 class SimConfig:
     ''' Top-level simulation settings, bundling the sub-configs. '''
     atom: str = 'Rb87'
-    dt: float = 1e-6                # physics timestep, s
-    substeps: int = 20              # physics steps advanced per rendered frame
+    dt: float = 2e-6                # physics timestep, s
+    substeps: int = 4               # physics steps per published buffer
+    speed: float = 20.0             # sim-time multiplier (dt_eff = dt * speed)
+    fast_mode: bool = True          # linearised MOT force near centre (fast)
     gravity: bool = True            # let atoms fall when untrapped
     recoil_heating: bool = True     # photon-recoil momentum diffusion
     heating_factor: float = 0.4     # scales recoil heating (=> Doppler-limit T)
