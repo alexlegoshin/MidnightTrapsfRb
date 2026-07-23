@@ -61,6 +61,10 @@ class CameraConfig:
 class SimConfig:
     ''' Top-level simulation settings, bundling the sub-configs. '''
     atom: str = 'Rb87'
+    cell_size: float = 12e-3        # half-size of the vacuum cell, m. Atoms
+    #                                 reflect off the walls, so an untrapped
+    #                                 cloud stays localised (and can be recooled)
+    #                                 instead of accelerating away for ever.
     dt: float = 2e-6                # physics timestep, s
     substeps: int = 4               # physics steps per published buffer
     speed: float = 20.0             # sim-time multiplier (dt_eff = dt * speed)

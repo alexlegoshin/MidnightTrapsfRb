@@ -177,6 +177,10 @@ class RealTimeSimulation:
         self.mot = mn.six_beam_mot(self.atom, power=m.power, radius=m.radius,
                                    detuning=m.detuning, B_gradient=m.B_gradient,
                                    handedness=m.handedness)
+        self.beam_radius = m.radius
+        # velocity where the Doppler force peaks (~ capture velocity): where the
+        # laser is Doppler-shifted onto resonance, k*v = |detuning|.
+        self.v_capture = max(abs(m.detuning), 0.5) * self.linewidth / self.wavenumber
         self._linearise_mot()
 
     def _linearise_mot(self):
@@ -335,12 +339,24 @@ class RealTimeSimulation:
         center = xp.asarray(self.center)
         F0 = xp.asarray(self.F0)
 
+        R_beam = self.beam_radius
+        v_cap = self.v_capture
+
         def accel(Xq, Vq):
             a = grav + xp.zeros_like(Xq)
             if cooling_on and force_scale > 1e-6:
                 if fast:  # linearised force about the live cloud centroid
-                    a = a + force_scale * (F0 - kappa * (Xq - center)
-                                           - beta * Vq) / self.mass
+                    dx = Xq - center
+                    # the MOT only acts inside the beams: taper the force to zero
+                    # beyond the beam radius so a dispersed atom outside the beams
+                    # feels nothing (and the linear spring never "fires" it off).
+                    r = xp.sqrt(xp.sum(dx * dx, axis=1))
+                    env = xp.exp(-(r / R_beam) ** 4)[:, None]
+                    # damping rolls off past the capture velocity (Doppler force
+                    # peaks near k*v = |detuning| then falls), so fast atoms are
+                    # not over-cooled -- only atoms below v_cap are recaptured.
+                    v_roll = Vq / (1 + (Vq / v_cap) ** 2)
+                    a = a + force_scale * env * (F0 - kappa * dx - beta * v_roll) / self.mass
                 else:     # full 6-beam scattering force
                     a = a + force_scale * self.mot.acceleration(Xq, Vq)
             if dipole_on:
@@ -380,6 +396,15 @@ class RealTimeSimulation:
             std = self.cfg.heating_factor * self.v_recoil \
                 * np.sqrt(2 * self.heating_rate * dt)
             self.V = self.V + std * xp.random.standard_normal(self.V.shape)
+
+        # elastic reflection off the vacuum-cell walls: an untrapped cloud stays
+        # localised (and available for recapture) rather than flying off.
+        if self.cfg.cell_size:
+            xp = backend.get_array_module(self.X)
+            L = self.cfg.cell_size
+            outside = xp.abs(self.X) > L
+            self.V = xp.where(outside, -self.V, self.V)
+            self.X = xp.clip(self.X, -L, L)
 
         self.time += dt
 
@@ -470,8 +495,11 @@ def fit_linear_coeffs(mot, center, rms_x=None, rms_v=None):
     center = np.asarray(center, dtype=float)
     c = center.reshape(1, 3)
     zero = np.zeros((1, 3))
-    dx_vec = np.maximum(rms_x if rms_x is not None else np.full(3, 1e-4), 5e-5)
-    dv_vec = np.maximum(rms_v if rms_v is not None else np.full(3, 0.1), 1e-2)
+    # keep the finite-difference steps in the near-centre linear regime: if the
+    # cloud has dispersed (large rms) we still want the trap's central spring,
+    # not an average over the flat force far outside the beams.
+    dx_vec = np.clip(rms_x if rms_x is not None else np.full(3, 1e-4), 5e-5, 2e-3)
+    dv_vec = np.clip(rms_v if rms_v is not None else np.full(3, 0.1), 1e-2, 0.5)
 
     F0 = backend.asnumpy(mot.force(c, zero))[0]
     kappa = np.zeros(3)
